@@ -3,8 +3,47 @@
 #include <netinet/in.h>
 #include <string>
 #include <unistd.h>
+#include <thread>
+
+// test
+#include <chrono>
 
 using std::string;
+using std::thread;
+
+// test
+using std::chrono::seconds;
+using std::this_thread::sleep_for;
+
+void handle_client(int client_connection)
+{
+    // test
+    sleep_for(seconds(10));
+
+    // read
+    char buffer[4096];
+    int nRecv = recv(client_connection, buffer, sizeof(buffer), 0);
+
+    printf("%d bytes received from Client %d \n", nRecv, client_connection);
+
+    string response = "HTTP/1.1 200 OK\r\n"   // Protocol + status code + reason
+                      "Content-Length: 5\r\n" // bytes in body
+                      "\r\n"                  // end of headers
+                      "Hello";                // body
+
+    ssize_t nSend = send(client_connection, response.c_str(), response.size(), 0);
+
+    if (nSend < 0)
+    {
+        printf("Send failed to Client %d \n", client_connection);
+    }
+    else
+    {
+        printf("Response sent to Client %d \n", client_connection);
+    }
+
+    close(client_connection);
+}
 
 int main()
 {
@@ -27,7 +66,7 @@ int main()
 
     if (bindStatus < 0)
     {
-        printf("Failed to bing socket \n");
+        printf("Failed to bind socket \n");
     }
 
     // listen
@@ -47,27 +86,12 @@ int main()
         {
             printf("Failed to connect with client \n");
         }
-
-        // read
-        char buffer[4096];
-        int nRecv = recv(clientConnection, buffer, sizeof(buffer), 0);
-
-        printf("%d bytes received \n", nRecv);
-
-        string response = "HTTP/1.1 200 OK\r\n"   // Protocol + status code + reason
-                          "Content-Length: 5\r\n" // bytes in body
-                          "\r\n"                  // end of headers
-                          "Hello";                // body
-
-        ssize_t nSend = send(clientConnection, response.c_str(), response.size(), 0);
-
-        if (nSend < 0)
+        else
         {
-            printf("Send failed\n");
+            printf("Client number %d connected \n", clientConnection);
         }
 
-        close(clientConnection);
+        // handle client request
+        thread(handle_client, clientConnection).detach();
     }
-
-    // close
 }
