@@ -5,17 +5,110 @@
 #include <unistd.h>
 #include <thread>
 #include <sstream>
+#include <unordered_map>
+#include <fstream>
 
 // test
 #include <chrono>
 
+using std::getline;
+using std::ifstream;
 using std::istringstream;
 using std::string;
+using std::stringstream;
 using std::thread;
+using std::unordered_map;
 
 // test
 using std::chrono::seconds;
 using std::this_thread::sleep_for;
+
+string serve_index()
+{
+    ifstream f("./www/index.html");
+    stringstream file_content;
+
+    if (f.is_open())
+    {
+        file_content << f.rdbuf();
+    }
+    else
+    {
+        file_content << "<h1>Index file not found</h1>";
+    }
+
+    string response_str = file_content.str();
+
+    return "HTTP/1.1 200 OK\r\n"
+           "Content-Type: text/html\r\n"
+           "Content-Length: " +
+           std::to_string(response_str.size()) +
+           "\r\n"
+           "Connection: close\r\n"
+           "\r\n" +
+           response_str;
+}
+
+string serve_hello()
+{
+    return "HTTP/1.1 200 OK\r\n"
+           "Content-Type: text/html\r\n"
+           "Content-Length: 15\r\n"
+           "Connection: close\r\n"
+           "\r\n"
+           "<h1>Hello!</h1>";
+}
+
+string serve_404()
+{
+    return "HTTP/1.1 404 Not Found\r\n"
+           "Content-Type: text/html\r\n"
+           "Content-Length: 22\r\n"
+           "Connection: close\r\n"
+           "\r\n"
+           "<h1>404 Not Found</h1>";
+}
+
+unordered_map<string, string> parse_headers(const string &header_string)
+{
+    unordered_map<string, string> headers;
+
+    istringstream iss(header_string);
+    string cur_line;
+
+    // request line
+    getline(iss, cur_line);
+
+    // parse headers
+    while (getline(iss, cur_line))
+    {
+        // end of header
+        if (cur_line == "\r" || cur_line.empty())
+        {
+            break;
+        }
+
+        // remove \r
+        if (!cur_line.empty() && cur_line.back() == '\r')
+        {
+            cur_line.pop_back();
+        }
+
+        // parse
+        size_t colon = cur_line.find(':');
+        if (colon == string::npos)
+        {
+            continue;
+        }
+
+        string key = cur_line.substr(0, colon);
+        string value = cur_line.substr(colon + 2);
+
+        headers[key] = value;
+    }
+
+    return headers;
+}
 
 void handle_client(int client_connection)
 {
@@ -45,6 +138,8 @@ void handle_client(int client_connection)
 
     string httpRequest(buffer, bytes_received);
 
+    unordered_map<string, string> headers = parse_headers(httpRequest);
+
     size_t pos = httpRequest.find("\r\n");
     string request_line = httpRequest.substr(0, pos);
 
@@ -62,28 +157,22 @@ void handle_client(int client_connection)
     // */
 
     // construct the http response
-    string response_body;
+    string response;
 
     if (path == "/")
     {
-        response_body = "Welcome!";
+        response = serve_index();
     }
     else if (path == "/hello")
     {
-        response_body = "Hello Word!";
+        response = serve_hello();
     }
     else
     {
-        response_body = "404 Not Found";
+        response = serve_404();
     }
 
-    string httpResponse = "HTTP/1.1 200 OK\r\n" // Protocol + status code + reason
-                          "Content-Length: " +
-                          std::to_string(response_body.size()) + "\r\n" + // bytes in body
-                          "\r\n" +                                        // end of headers
-                          response_body;                                  // body
-
-    ssize_t nSend = send(client_connection, httpResponse.c_str(), httpResponse.size(), 0);
+    ssize_t nSend = send(client_connection, response.c_str(), response.size(), 0);
 
     if (nSend < 0)
     {
