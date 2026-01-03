@@ -116,16 +116,26 @@ void handle_client(int client_connection)
     // sleep_for(seconds(10));
 
     // read
+    string request;
     char buffer[4096];
-    int bytes_received = recv(client_connection, buffer, sizeof(buffer), 0);
 
-    if (bytes_received <= 0)
+    while (true)
     {
-        close(client_connection);
-        return;
-    }
+        ssize_t bytes_received = recv(client_connection, buffer, sizeof(buffer), 0);
 
-    printf("%d bytes received from Client %d \n", bytes_received, client_connection);
+        if (bytes_received <= 0)
+        {
+            break;
+        }
+
+        request.append(buffer, bytes_received);
+
+        // printf("%d bytes received from Client %d \n", bytes_received, client_connection);
+        if (request.find("\r\n\r\n") != std::string::npos)
+        {
+            break;
+        }
+    }
 
     // parse the http request
 
@@ -135,13 +145,14 @@ void handle_client(int client_connection)
     // Accept: */*\r\n
     // Connection: close\r\n
     // \r\n
+    size_t header_end = request.find("\r\n\r\n");
+    string header = request.substr(0, header_end);
+    string body = request.substr(header_end + 4);
 
-    string httpRequest(buffer, bytes_received);
+    unordered_map<string, string> headers = parse_headers(header);
 
-    unordered_map<string, string> headers = parse_headers(httpRequest);
-
-    size_t pos = httpRequest.find("\r\n");
-    string request_line = httpRequest.substr(0, pos);
+    size_t pos = header.find("\r\n");
+    string request_line = header.substr(0, pos);
 
     istringstream iss(request_line);
     string method, path, version;
@@ -155,6 +166,25 @@ void handle_client(int client_connection)
     //    printf("%.*s\n", bytes_received, buffer);
     // }
     // */
+
+    // read in rest of body
+    int body_len = 0;
+    if (headers.find("Content-Length") != headers.end())
+    {
+        body_len = stoi(headers["Content-Length"]);
+    }
+
+    while (body.size() < body_len)
+    {
+        ssize_t bytes_received = recv(client_connection, buffer, sizeof(buffer), 0);
+
+        if (bytes_received <= 0)
+        {
+            break;
+        }
+
+        body.append(buffer, bytes_received);
+    }
 
     // construct the http response
     string response;
