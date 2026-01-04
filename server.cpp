@@ -7,10 +7,12 @@
 #include <sstream>
 #include <unordered_map>
 #include <fstream>
+#include <functional>
 
 // test
 #include <chrono>
 
+using std::function;
 using std::getline;
 using std::ifstream;
 using std::istringstream;
@@ -23,7 +25,56 @@ using std::unordered_map;
 using std::chrono::seconds;
 using std::this_thread::sleep_for;
 
-string serve_index()
+unordered_map<string, function<void(int)>> routes;
+
+void send_error(int client, int code, const string &message)
+{
+    string body = message + "\n";
+    string response =
+        "HTTP/1.1 " +
+        std::to_string(code) +
+        " " +
+        message +
+        "\r\n"
+        "Content-Length: " +
+        std::to_string(body.size()) +
+        "\r\n"
+        "Connection: close\r\n"
+        "\r\n" +
+        body;
+
+    send(client, response.c_str(), response.size(), 0);
+}
+
+void send_response(int client, const string &body, const string &status = "200 OK", const string &type = "text/plain")
+{
+    string response =
+        "HTTP/1.1 " +
+        status +
+        "\r\n"
+        "Content-Type: " +
+        type +
+        "\r\n"
+        "Content-Length: " +
+        std::to_string(body.size()) +
+        "\r\n"
+        "Connection: close\r\n"
+        "\r\n" +
+        body;
+
+    ssize_t nSend = send(client, response.c_str(), response.size(), 0);
+
+    if (nSend < 0)
+    {
+        printf("Failed to send to Client %d \n", client);
+    }
+    else
+    {
+        printf("Response sent to Client %d \n", client);
+    }
+}
+
+void serve_index(int client)
 {
     ifstream f("./www/index.html");
     stringstream file_content;
@@ -39,34 +90,12 @@ string serve_index()
 
     string response_str = file_content.str();
 
-    return "HTTP/1.1 200 OK\r\n"
-           "Content-Type: text/html\r\n"
-           "Content-Length: " +
-           std::to_string(response_str.size()) +
-           "\r\n"
-           "Connection: close\r\n"
-           "\r\n" +
-           response_str;
+    send_response(client, response_str, "200 OK", "text/html");
 }
 
-string serve_hello()
+void serve_hello(int client)
 {
-    return "HTTP/1.1 200 OK\r\n"
-           "Content-Type: text/html\r\n"
-           "Content-Length: 15\r\n"
-           "Connection: close\r\n"
-           "\r\n"
-           "<h1>Hello!</h1>";
-}
-
-string serve_404()
-{
-    return "HTTP/1.1 404 Not Found\r\n"
-           "Content-Type: text/html\r\n"
-           "Content-Length: 22\r\n"
-           "Connection: close\r\n"
-           "\r\n"
-           "<h1>404 Not Found</h1>";
+    send_response(client, "<h1>Hello</h1>", "200 OK", "text/html");
 }
 
 unordered_map<string, string> parse_headers(const string &header_string)
@@ -160,6 +189,24 @@ void handle_client(int client_connection)
     iss >> path;
     iss >> version;
 
+    if (method.empty() || path.empty() || version.empty())
+    {
+        send_error(client_connection, 400, "Bad Request");
+        return;
+    }
+
+    if (routes.count(path) == 0)
+    {
+        send_error(client_connection, 404, "Not Found");
+        return;
+    }
+
+    if (method != "GET" && method != "POST")
+    {
+        send_error(client_connection, 405, "Method Not Allowed");
+        return;
+    }
+
     // print http request
     // if (bytes_received > 0)
     // {
@@ -188,29 +235,20 @@ void handle_client(int client_connection)
 
     // construct the http response
     string response;
-
-    if (path == "/")
+    try
     {
-        response = serve_index();
+        if (path == "/")
+        {
+            serve_index(client_connection);
+        }
+        else if (path == "/hello")
+        {
+            serve_hello(client_connection);
+        }
     }
-    else if (path == "/hello")
+    catch (...)
     {
-        response = serve_hello();
-    }
-    else
-    {
-        response = serve_404();
-    }
-
-    ssize_t nSend = send(client_connection, response.c_str(), response.size(), 0);
-
-    if (nSend < 0)
-    {
-        printf("Failed to send to Client %d \n", client_connection);
-    }
-    else
-    {
-        printf("Response sent to Client %d \n", client_connection);
+        send_error(client_connection, 500, "Internal Server Error");
     }
 
     close(client_connection);
@@ -218,6 +256,10 @@ void handle_client(int client_connection)
 
 int main()
 {
+    // route map
+    routes["/"] = serve_index;
+    routes["/hello"] = serve_hello;
+
     // create socket
     int httpServer = socket(AF_INET, SOCK_STREAM, 0);
 
