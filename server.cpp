@@ -25,8 +25,7 @@ using std::unordered_map;
 using std::chrono::seconds;
 using std::this_thread::sleep_for;
 
-unordered_map<string, function<void(int)>> routes;
-
+// generic error handler
 void send_error(int client, int code, const string &message)
 {
     string body = message + "\n";
@@ -46,6 +45,7 @@ void send_error(int client, int code, const string &message)
     send(client, response.c_str(), response.size(), 0);
 }
 
+// generic response handler
 void send_response(int client, const string &body, const string &status = "200 OK", const string &type = "text/plain")
 {
     string response =
@@ -74,9 +74,37 @@ void send_response(int client, const string &body, const string &status = "200 O
     }
 }
 
-void serve_index(int client)
+// mime map
+string get_content_type(const string &path)
 {
-    ifstream f("./www/index.html");
+    if (path.ends_with(".html"))
+        return "text/html";
+    if (path.ends_with(".css"))
+        return "text/css";
+    if (path.ends_with(".js"))
+        return "application/javascript";
+    if (path.ends_with(".png"))
+        return "image/png";
+    if (path.ends_with(".jpg"))
+        return "image/jpeg";
+    if (path.ends_with(".jpeg"))
+        return "image/jpeg";
+    if (path.ends_with(".gif"))
+        return "image/gif";
+    return "application/octet-stream";
+}
+
+// generic file handler
+void serve_static(int client, const string &path)
+{
+    std::string filepath = "www";
+
+    if (path == "/")
+        filepath += "/index.html";
+    else
+        filepath += path;
+
+    ifstream f(filepath);
     stringstream file_content;
 
     if (f.is_open())
@@ -85,19 +113,15 @@ void serve_index(int client)
     }
     else
     {
-        file_content << "<h1>Index file not found</h1>";
+        send_error(client, 404, "Not Found");
     }
 
     string response_str = file_content.str();
 
-    send_response(client, response_str, "200 OK", "text/html");
+    send_response(client, response_str, "200 OK", get_content_type(filepath));
 }
 
-void serve_hello(int client)
-{
-    send_response(client, "<h1>Hello</h1>", "200 OK", "text/html");
-}
-
+// parse request header
 unordered_map<string, string> parse_headers(const string &header_string)
 {
     unordered_map<string, string> headers;
@@ -139,12 +163,10 @@ unordered_map<string, string> parse_headers(const string &header_string)
     return headers;
 }
 
+// main packet processing
 void handle_client(int client_connection)
 {
-    // test
-    // sleep_for(seconds(10));
-
-    // read
+    // read incoming message
     string request;
     char buffer[4096];
 
@@ -159,7 +181,7 @@ void handle_client(int client_connection)
 
         request.append(buffer, bytes_received);
 
-        // printf("%d bytes received from Client %d \n", bytes_received, client_connection);
+        // reach end of http request
         if (request.find("\r\n\r\n") != std::string::npos)
         {
             break;
@@ -167,13 +189,6 @@ void handle_client(int client_connection)
     }
 
     // parse the http request
-
-    // GET /hello HTTP/1.1\r\n
-    // Host: localhost:8080\r\n
-    // User-Agent: curl/7.85.0\r\n
-    // Accept: */*\r\n
-    // Connection: close\r\n
-    // \r\n
     size_t header_end = request.find("\r\n\r\n");
     string header = request.substr(0, header_end);
     string body = request.substr(header_end + 4);
@@ -189,30 +204,24 @@ void handle_client(int client_connection)
     iss >> path;
     iss >> version;
 
+    // check if valid request
     if (method.empty() || path.empty() || version.empty())
     {
         send_error(client_connection, 400, "Bad Request");
         return;
     }
 
-    if (routes.count(path) == 0)
+    if (path.find("..") != string::npos) // malicious path
     {
-        send_error(client_connection, 404, "Not Found");
+        send_error(client_connection, 400, "Bad Request");
         return;
     }
 
-    if (method != "GET" && method != "POST")
+    if (method != "GET" && method != "POST" && method != "HEAD")
     {
         send_error(client_connection, 405, "Method Not Allowed");
         return;
     }
-
-    // print http request
-    // if (bytes_received > 0)
-    // {
-    //    printf("%.*s\n", bytes_received, buffer);
-    // }
-    // */
 
     // read in rest of body
     int body_len = 0;
@@ -233,18 +242,10 @@ void handle_client(int client_connection)
         body.append(buffer, bytes_received);
     }
 
-    // construct the http response
-    string response;
+    // serve the http response
     try
     {
-        if (path == "/")
-        {
-            serve_index(client_connection);
-        }
-        else if (path == "/hello")
-        {
-            serve_hello(client_connection);
-        }
+        serve_static(client_connection, path);
     }
     catch (...)
     {
@@ -256,10 +257,6 @@ void handle_client(int client_connection)
 
 int main()
 {
-    // route map
-    routes["/"] = serve_index;
-    routes["/hello"] = serve_hello;
-
     // create socket
     int httpServer = socket(AF_INET, SOCK_STREAM, 0);
 
