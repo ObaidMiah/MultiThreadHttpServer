@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <fstream>
 #include <functional>
+#include <sys/time.h>
 
 // test
 #include <chrono>
@@ -46,7 +47,7 @@ void send_error(int client, int code, const string &message)
 }
 
 // generic response handler
-void send_response(int client, const string &body, const string &status = "200 OK", const string &type = "text/plain")
+void send_response(int client, const string &body, const string &status = "200 OK", const string &type = "text/plain", const string &conn = "keep-alive")
 {
     string response =
         "HTTP/1.1 " +
@@ -58,8 +59,9 @@ void send_response(int client, const string &body, const string &status = "200 O
         "Content-Length: " +
         std::to_string(body.size()) +
         "\r\n"
-        "Connection: close\r\n"
-        "\r\n" +
+        "Connection: " +
+        conn +
+        "\r\n\r\n" +
         body;
 
     ssize_t nSend = send(client, response.c_str(), response.size(), 0);
@@ -95,7 +97,7 @@ string get_content_type(const string &path)
 }
 
 // generic file handler
-void serve_static(int client, const string &path)
+void serve_static(int client, const string &path, const string &conn)
 {
     std::string filepath = "www";
 
@@ -114,11 +116,12 @@ void serve_static(int client, const string &path)
     else
     {
         send_error(client, 404, "Not Found");
+        return;
     }
 
     string response_str = file_content.str();
 
-    send_response(client, response_str, "200 OK", get_content_type(filepath));
+    send_response(client, response_str, "200 OK", get_content_type(filepath), conn);
 }
 
 // parse request header
@@ -166,90 +169,126 @@ unordered_map<string, string> parse_headers(const string &header_string)
 // main packet processing
 void handle_client(int client_connection)
 {
+    // receive timeout
+    timeval timeout;
+    timeout.tv_sec = 5;
+    timeout.tv_usec = 0;
+    setsockopt(client_connection, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
     // read incoming message
     string request;
     char buffer[4096];
+    bool open_connection = true;
 
-    while (true)
+    while (open_connection)
     {
-        ssize_t bytes_received = recv(client_connection, buffer, sizeof(buffer), 0);
+        // clear request string
+        request.clear();
 
-        if (bytes_received <= 0)
+        while (true)
         {
+            ssize_t bytes_received = recv(client_connection, buffer, sizeof(buffer), 0);
+
+            if (bytes_received <= 0)
+            {
+                break;
+            }
+
+            request.append(buffer, bytes_received);
+
+            // reach end of http request
+            if (request.find("\r\n\r\n") != std::string::npos)
+            {
+                break;
+            }
+        }
+
+        // parse the http request
+        size_t header_end = request.find("\r\n\r\n");
+        if (header_end == string::npos)
+        {
+            send_error(client_connection, 400, "Bad Request");
+            break;
+        }
+        string header = request.substr(0, header_end);
+        string body = request.substr(header_end + 4);
+
+        unordered_map<string, string> headers = parse_headers(header);
+
+        size_t pos = header.find("\r\n");
+        if (pos == string::npos)
+        {
+            send_error(client_connection, 400, "Bad Request");
+            break;
+        }
+        string request_line = header.substr(0, pos);
+
+        istringstream iss(request_line);
+        string method, path, version;
+        iss >> method;
+        iss >> path;
+        iss >> version;
+
+        // check if valid request
+        if (method.empty() || path.empty() || version.empty())
+        {
+            send_error(client_connection, 400, "Bad Request");
             break;
         }
 
-        request.append(buffer, bytes_received);
-
-        // reach end of http request
-        if (request.find("\r\n\r\n") != std::string::npos)
+        if (path.find("..") != string::npos) // malicious path
         {
-            break;
-        }
-    }
-
-    // parse the http request
-    size_t header_end = request.find("\r\n\r\n");
-    string header = request.substr(0, header_end);
-    string body = request.substr(header_end + 4);
-
-    unordered_map<string, string> headers = parse_headers(header);
-
-    size_t pos = header.find("\r\n");
-    string request_line = header.substr(0, pos);
-
-    istringstream iss(request_line);
-    string method, path, version;
-    iss >> method;
-    iss >> path;
-    iss >> version;
-
-    // check if valid request
-    if (method.empty() || path.empty() || version.empty())
-    {
-        send_error(client_connection, 400, "Bad Request");
-        return;
-    }
-
-    if (path.find("..") != string::npos) // malicious path
-    {
-        send_error(client_connection, 400, "Bad Request");
-        return;
-    }
-
-    if (method != "GET" && method != "POST" && method != "HEAD")
-    {
-        send_error(client_connection, 405, "Method Not Allowed");
-        return;
-    }
-
-    // read in rest of body
-    int body_len = 0;
-    if (headers.find("Content-Length") != headers.end())
-    {
-        body_len = stoi(headers["Content-Length"]);
-    }
-
-    while (body.size() < body_len)
-    {
-        ssize_t bytes_received = recv(client_connection, buffer, sizeof(buffer), 0);
-
-        if (bytes_received <= 0)
-        {
+            send_error(client_connection, 400, "Bad Request");
             break;
         }
 
-        body.append(buffer, bytes_received);
-    }
+        if (method != "GET" && method != "POST")
+        {
+            send_error(client_connection, 405, "Method Not Allowed");
+            break;
+        }
 
-    // serve the http response
-    try
-    {
-        serve_static(client_connection, path);
-    }
-    catch (...)
-    {
-        send_error(client_connection, 500, "Internal Server Error");
+        // read in rest of body
+        size_t body_len = 0;
+        if (headers.find("Content-Length") != headers.end())
+        {
+            body_len = stoi(headers["Content-Length"]);
+        }
+
+        while (body.size() < body_len)
+        {
+            ssize_t bytes_received = recv(client_connection, buffer, sizeof(buffer), 0);
+
+            if (bytes_received <= 0)
+            {
+                break;
+            }
+
+            body.append(buffer, bytes_received);
+        }
+
+        // check default connection behavior
+        if (version == "HTTP/1.1")
+            open_connection = true;
+        else
+            open_connection = false;
+
+        // override connection with any header value
+        if (headers.count("Connection") && headers["Connection"] == "close")
+        {
+            open_connection = false;
+        }
+
+        // serve the http response
+        try
+        {
+            string conn = open_connection ? "keep-alive" : "close";
+            serve_static(client_connection, path, conn);
+        }
+        catch (...)
+        {
+            send_error(client_connection, 500, "Internal Server Error");
+        }
     }
 
     close(client_connection);
