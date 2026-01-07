@@ -203,6 +203,12 @@ void handle_client(int client_connection)
             }
         }
 
+        // if no request was received (timeout or disconnect), close connection
+        if (request.empty())
+        {
+            break;
+        }
+
         // parse the http request
         size_t header_end = request.find("\r\n\r\n");
         if (header_end == string::npos)
@@ -274,9 +280,16 @@ void handle_client(int client_connection)
             open_connection = false;
 
         // override connection with any header value
-        if (headers.count("Connection") && headers["Connection"] == "close")
+        if (headers.count("Connection"))
         {
-            open_connection = false;
+            if (headers["Connection"] == "close")
+            {
+                open_connection = false;
+            }
+            else if (headers["Connection"] == "keep-alive")
+            {
+                open_connection = true;
+            }
         }
 
         // serve the http response
