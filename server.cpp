@@ -9,22 +9,35 @@
 #include <fstream>
 #include <functional>
 #include <sys/time.h>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
+#include <vector>
 
 // test
 #include <chrono>
 
+using std::condition_variable;
 using std::function;
 using std::getline;
 using std::ifstream;
 using std::istringstream;
+using std::mutex;
+using std::queue;
 using std::string;
 using std::stringstream;
 using std::thread;
 using std::unordered_map;
+using std::vector;
 
 // test
 using std::chrono::seconds;
 using std::this_thread::sleep_for;
+
+constexpr int WORKER_COUNT = 8;
+queue<int> client_queue;
+mutex queue_mutex;
+condition_variable queue_cv;
 
 // generic error handler
 void send_error(int client, int code, const string &message)
@@ -307,6 +320,25 @@ void handle_client(int client_connection)
     close(client_connection);
 }
 
+void worker_thread()
+{
+    while (true)
+    {
+        int client_connection;
+
+        {
+            std::unique_lock<mutex> lock(queue_mutex);
+            queue_cv.wait(lock, []
+                          { return !client_queue.empty(); });
+
+            client_connection = client_queue.front();
+            client_queue.pop();
+        }
+
+        handle_client(client_connection);
+    }
+}
+
 int main()
 {
     // create socket
@@ -329,6 +361,7 @@ int main()
     if (bindStatus < 0)
     {
         printf("Failed to bind socket \n");
+        return -1;
     }
 
     // listen
@@ -337,6 +370,14 @@ int main()
     if (listenStatus < 0)
     {
         printf("Listening error \n");
+        return -1;
+    }
+
+    vector<thread> workers;
+
+    for (int i = 0; i < WORKER_COUNT; ++i)
+    {
+        workers.emplace_back(worker_thread);
     }
 
     while (true)
@@ -346,14 +387,15 @@ int main()
 
         if (clientConnection < 0)
         {
-            printf("Failed to connect with client \n");
-        }
-        else
-        {
-            printf("Client number %d connected \n", clientConnection);
+            printf("Accept failure");
+            continue;
         }
 
-        // handle client request
-        thread(handle_client, clientConnection).detach();
+        {
+            std::lock_guard<mutex> lock(queue_mutex);
+            client_queue.push(clientConnection);
+        }
+
+        queue_cv.notify_one();
     }
 }
