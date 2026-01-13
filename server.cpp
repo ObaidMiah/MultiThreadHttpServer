@@ -39,6 +39,8 @@ queue<int> client_queue;
 mutex queue_mutex;
 condition_variable queue_cv;
 
+unordered_map<string, function<void(int, const string &)>> routes;
+
 // generic error handler
 void send_error(int client, int code, const string &message)
 {
@@ -87,6 +89,17 @@ void send_response(int client, const string &body, const string &status = "200 O
     {
         printf("Response sent to Client %d \n", client);
     }
+}
+
+void health_handler(int client, const string &conn)
+{
+    send_response(client, "OK\n", "200 OK", "text/plain", conn);
+}
+
+void time_handler(int client, const string &conn)
+{
+    auto now = std::time(nullptr);
+    send_response(client, std::ctime(&now), "200 OK", "text/plain", conn);
 }
 
 // mime map
@@ -309,7 +322,15 @@ void handle_client(int client_connection)
         try
         {
             string conn = open_connection ? "keep-alive" : "close";
-            serve_static(client_connection, path, conn);
+
+            if (routes.count(path))
+            {
+                routes[path](client_connection, conn);
+            }
+            else
+            {
+                serve_static(client_connection, path, conn);
+            }
         }
         catch (...)
         {
@@ -341,6 +362,10 @@ void worker_thread()
 
 int main()
 {
+    // routes
+    routes["/health"] = health_handler;
+    routes["/time"] = time_handler;
+
     // create socket
     int httpServer = socket(AF_INET, SOCK_STREAM, 0);
 
