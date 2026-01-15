@@ -39,9 +39,17 @@ queue<int> client_queue;
 mutex queue_mutex;
 condition_variable queue_cv;
 
-unordered_map<string, function<void(int, const string &)>> routes;
+using RouteHandler = function<void(
+    int,                                  // client fd
+    const string &,                       // method
+    const string &,                       // path
+    const string &,                       // body
+    const unordered_map<string, string> & // headers
+    )>;
 
-// generic error handler
+unordered_map<string, RouteHandler> routes;
+
+// generic error handlers
 void send_error(int client, int code, const string &message)
 {
     string body = message + "\n";
@@ -91,15 +99,15 @@ void send_response(int client, const string &body, const string &status = "200 O
     }
 }
 
-void health_handler(int client, const string &conn)
+// generic json handler
+void send_json(int client, const string &json, const string &status = "200 OK", const string &conn = "keep-alive")
 {
-    send_response(client, "OK\n", "200 OK", "text/plain", conn);
-}
-
-void time_handler(int client, const string &conn)
-{
-    auto now = std::time(nullptr);
-    send_response(client, std::ctime(&now), "200 OK", "text/plain", conn);
+    send_response(
+        client,
+        json,
+        status,
+        "application/json",
+        conn);
 }
 
 // mime map
@@ -325,7 +333,7 @@ void handle_client(int client_connection)
 
             if (routes.count(path))
             {
-                routes[path](client_connection, conn);
+                routes[path](client_connection, method, path, body, headers);
             }
             else
             {
@@ -363,8 +371,39 @@ void worker_thread()
 int main()
 {
     // routes
-    routes["/health"] = health_handler;
-    routes["/time"] = time_handler;
+    routes["/api/health"] = [](int client, const string &method, const string &, const string &, const auto &)
+    {
+        if (method != "GET")
+        {
+            send_error(client, 405, "Method Not Allowed");
+            return;
+        }
+
+        send_json(client, R"({"status":"ok"})");
+    };
+
+    routes["/api/time"] = [](int client, const string &method, const string &, const string &, const auto &)
+    {
+        if (method != "GET")
+        {
+            send_error(client, 405, "Method Not Allowed");
+            return;
+        }
+
+        time_t now = time(nullptr);
+        send_json(client, string("{\"epoch\":") + std::to_string(now) + "}");
+    };
+
+    routes["/api/echo"] = [](int client, const string &method, const string &, const string &body, const auto &)
+    {
+        if (method != "POST")
+        {
+            send_error(client, 405, "Method Not Allowed");
+            return;
+        }
+
+        send_json(client, string("{\"echo\":") + "\"" + body + "\"}");
+    };
 
     // create socket
     int httpServer = socket(AF_INET, SOCK_STREAM, 0);
